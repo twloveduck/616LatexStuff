@@ -62,6 +62,8 @@ import string
 import typing
 import weakref
 
+import pyperclip
+
 # \csdef{STATE}#1{q_{#1}}
 # \csdef{TRNS}#3{\t{\STATE{#1} \mapsto{#2} \STATE{#3}}}
 # \csdef{MAKEMACHINE}#2{%
@@ -86,12 +88,29 @@ def Brace(s: str) -> str:
     return '{' + s + '}'
 
 
+def idx_2(index: str) -> str:
+    """
+    This converts a name into a subscript for a FSA machine.
+
+    Example: nameToSubscript('a2b') = '\\alpha2\\beta'
+    :param index: the name to convert.
+    :return: A string sutable for the FSA machine subscript.
+    """
+    return ''.join([GreekIndexes.setdefault(ele, ele) for ele in list(index)])
+
+
 def state(prefix: str, idx: int | str) -> str:
+    """
+    Returns a string representing a state in a FSA where the FSA machine has the given prefix
+    :param prefix: FSA's prefix.
+    :param idx: The index of this state in the FSA machine.
+    :return: A string representing the name of a state in the FSA machine.
+    """
     return f"q_{'{'}{prefix}.{idx}{'}'}"
 
 
-def nameToSubscript(name: str) -> str:
-    return ''.join([GreekIndexes.setdefault(ele, ele) for ele in list(name)])
+def state_2(name: str, idx: int | str) -> str:
+    return state(idx_2(name), idx)
 
 
 machTemplate: string.Template = (
@@ -113,40 +132,105 @@ class Delta:
             self.on = ', '.join(self.on)
 
     def __str__(self) -> str:
-        return f"{self.fromState}\\mapsto{Brace(self.on)} {self.toState}"
+        return f"{self.fromState}\\xmapsto{Brace(self.on)} {self.toState}"
 
-
-def Machine(name: str, transitions: (list[tuple[int, onType, int]: tuple[str, onType, str]] | onType)) -> str:
-    states: set[str] = {}
-    deltas: list[Delta] = []
-    prefix = nameToSubscript(name)
+transitions_type = (list[tuple[int | str, onType, int | str]] | onType)
+def Machine(name: str, transitions: transitions_type) -> str:
+    states: set[str] = set[str]()
+    deltasTable: list[Delta] = []
+    prefix = idx_2(name)
     match transitions:
+        # Determine which type of transition it is and handle it.
         case [*deltas]:
             for delta in deltas:
                 match delta:
-                    case (str(fromName), onType(on), str(toName)):
-                        states.add(fromName)
-                        states.add(toName)
-                        deltas.append(Delta(fromName, on, toName))
-                    case (str(fromIdx), onType(on), str(toIdx)):
-                        states.add(fromName := state(prefix, fromIdx))
-                        states.add(toName := state(prefix, toIdx))
-                        deltas.append(Delta(fromName, on, toName))
+                    case (fromIdx, onType as on, toIdx):
+                        def match_to_state(possIdx: int | str) -> str:
+                            match possIdx:
+                                case '0' | 'f' | int(_):
+                                    # Add my prefix and create a state.
+                                    return state(prefix, possIdx)
+                                case str():
+                                    # This is already a fully formatted state.
+                                    return possIdx
+                                case _:
+                                    raise ValueError(f"Unrecognized transition element {possIdx} in transition {delta}")
+
+                        states.add(fromName := match_to_state(fromIdx))
+                        states.add(toName := match_to_state(toIdx))
+                        deltasTable.append(Delta(fromName, on, toName))
                     case _:
                         raise ValueError(f"No match found for {delta}.")
+                # case ('0' as fromIdx, onType(on), str(toName)):
+                #     states.add(fromName := state(prefix, fromIdx))
+                #     states.add(toName)
+                #     deltas.append(Delta(fromName, on, toName))
+                # case (str(fromName), onType(on), str(toName)):
+                #     states.add(fromName)
+                #     states.add(toName)
+                #     deltas.append(Delta(fromName, on, toName))
         case str(on):
-            states.add(fromName:= state(prefix, 0))
-            states.add(toName:= state(prefix, 'f'))
-            deltas.append(Delta(fromName, on, toName))
+            states.add(fromName := state(prefix, 0))
+            states.add(toName := state(prefix, 'f'))
+            deltasTable.append(Delta(fromName, on, toName))
         case _:
             raise ValueError(f"No match found for {transitions}.")
+    xlist = ', '.join([str(delta) for delta in deltasTable])
 
-    return machTemplate.substitute(name=prefix, q0=state(prefix, 0), qf=state(prefix, 'f'))
+    return machTemplate.substitute(name=prefix, transitions=xlist, q0=state(prefix, 0), qf=state(prefix, 'f'))
+
 
 # Tests
 print(state('\\alpha', 0))
-print(nameToSubscript('a1b'))
-print(nameToSubscript('a1b.0'))
+print(idx_2('a1b'))
+print(idx_2('a1b.0'))
 print(Delta(state('1', 0), 'a', state('1', 'f')))
 print(Delta(state('1', 0), ['a', epsilonElement], state('1', 1)))
 
+outputStr = ''
+
+def print_mach(*mach: Machine.__annotations__, reset:bool = False):
+    global outputStr
+    if reset:
+        outputStr = ''
+    curMach = Machine(*mach)
+    print(f"Machine {mach!r}:\n{curMach}\n\n")
+    outputStr += curMach
+
+
+# Test a bunch of error conditions.
+testBadMachines = ['a1', ['a', epsilonElement],
+                   ['a', b'a'],
+                   [b'a', 'a'],
+                   ['b', [(0, 'f')]],
+                   ['b', ['a', epsilonElement]],
+                   ]
+for mach in testBadMachines:
+    try:
+        print(mach)
+        print(Machine(*mach))
+    except Exception as e:
+        print(f"Good catch for machine{mach!r}: {e}")
+
+print_mach('a', 'a')
+print_mach('a2a', 'a')
+print_mach('a2b', [(0, 'b', 1), (1, 'c', 'f')])
+print_mach('a2', [(0, epsilonElement, state_2('a2a', 0)), (state_2('a2b', 'f'), epsilonElement, 'f')])
+
+#  (a + bc)(a + b)*
+print_mach('a2a', 'b', reset=True)
+print_mach('a2b', 'c')
+print_mach('a2', [(0, epsilonElement, state_2('a2a', 0)), (state_2('a2b', 'f'), epsilonElement, 'f')])
+print_mach('a1', 'a')
+print_mach('a', [
+        (0, epsilonElement, state_2('a1', 0)),
+        (0, epsilonElement, state_2('a2', 0)),
+        (state_2('a1', 'f'), epsilonElement, 'f'),
+        (state_2('a2', 'f'), epsilonElement, 'f')
+])
+
+
+# def mach_cat(name: str, machAdeltas: transitions_type, machBdeltas: transitions_type):
+#     print(machAdeltas)
+
+pyperclip.copy(outputStr)
