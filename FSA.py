@@ -106,7 +106,8 @@ def state(prefix: str, idx: int | str) -> str:
     :param idx: The index of this state in the FSA machine.
     :return: A string representing the name of a state in the FSA machine.
     """
-    return f"q_{'{'}{prefix}.{idx}{'}'}"
+    # return f"q_{'{'}{prefix}.{idx}{'}'}"
+    return f"q^{Brace(prefix)}_{Brace(str(idx))}"
 
 
 def state_2(name: str, idx: int | str) -> str:
@@ -115,8 +116,22 @@ def state_2(name: str, idx: int | str) -> str:
 
 machTemplate: string.Template = (
         string.Template(
+                "\\begin{gather*}\n%\n% - $representation - \n\\textit{Machine description for $$M_{$name}$$}\\\\\n"
+                # "\\\\~\\\\\n%\n% - $representation - \n\\textit{Machine description for $$M_{$name}$$}\\\\\n"
                 "M_{$name} = \\t{Q_{$name}, \\Sigma, \\delta_{$name}, $q0, F_{$name}} = "
-                "\\t{\\s{$q0, $qf}, \\Sigma, \\s{$transitions}, $q0, \\s{$qf}}\\\\\n"))
+                "\\t{\\s{$states}, \\Sigma, \\s{$transitions}, $q0, \\s{$qf}}\n"
+                "\\end{gather*}\n\n"
+        ))
+
+longMachTemplate: string.Template = (
+        string.Template(
+                "\\begin{gather*}\n%\n% - $representation - \n\\textit{Machine description for $$M_{$name}$$}\\\\\n"
+                "Q_{$name} = \\s{$states}\\\\\n"
+                "\\delta_{$name} = \\s{$transitions}\\\\\n"
+                "F_{$name} = \\s{$qf}\\\\\n"
+                "M_{$name} = \\t{Q_{$name}, \\Sigma, \\delta_{$name}, $q0, F_{$name}}\n"
+                "\\end{gather*}\n\n"
+        ))
 
 onType = str | typing.Iterable[str]
 
@@ -134,8 +149,11 @@ class Delta:
     def __str__(self) -> str:
         return f"{self.fromState}\\xmapsto{Brace(self.on)} {self.toState}"
 
-transitions_type = (list[tuple[int | str, onType, int | str]] | onType)
-def Machine(name: str, transitions: transitions_type) -> str:
+
+transitions_type = (list[tuple[int | str, onType, int | str] | Delta] | onType)
+
+
+def getMachine(name: str, transitions: transitions_type) -> tuple[str, list[Delta]]:
     states: set[str] = set[str]()
     deltasTable: list[Delta] = []
     prefix = idx_2(name)
@@ -159,16 +177,12 @@ def Machine(name: str, transitions: transitions_type) -> str:
                         states.add(fromName := match_to_state(fromIdx))
                         states.add(toName := match_to_state(toIdx))
                         deltasTable.append(Delta(fromName, on, toName))
+                    case transition if isinstance(transition, Delta):
+                        states.add(transition.fromState)
+                        states.add(transition.toState)
+                        deltasTable.append(transition)
                     case _:
                         raise ValueError(f"No match found for {delta}.")
-                # case ('0' as fromIdx, onType(on), str(toName)):
-                #     states.add(fromName := state(prefix, fromIdx))
-                #     states.add(toName)
-                #     deltas.append(Delta(fromName, on, toName))
-                # case (str(fromName), onType(on), str(toName)):
-                #     states.add(fromName)
-                #     states.add(toName)
-                #     deltas.append(Delta(fromName, on, toName))
         case str(on):
             states.add(fromName := state(prefix, 0))
             states.add(toName := state(prefix, 'f'))
@@ -177,7 +191,19 @@ def Machine(name: str, transitions: transitions_type) -> str:
             raise ValueError(f"No match found for {transitions}.")
     xlist = ', '.join([str(delta) for delta in deltasTable])
 
-    return machTemplate.substitute(name=prefix, transitions=xlist, q0=state(prefix, 0), qf=state(prefix, 'f'))
+    strResult = machTemplate.substitute(representation=repr([name, transitions]), name=prefix,
+                                        states=', '.join(sorted(states)), transitions=xlist, q0=state(prefix, 0),
+                                        qf=state(prefix, 'f'))
+    if len(deltasTable) > 2:
+        strResult = longMachTemplate.substitute(representation=repr([name, transitions]), name=prefix,
+                                                states=', '.join(sorted(states)), transitions=xlist,
+                                                q0=state(prefix, 0), qf=state(prefix, 'f'))
+
+    return (strResult, deltasTable)
+
+
+def getMachineStr(name: str, transitions: transitions_type) -> str:
+    return getMachine(name, transitions)[0]
 
 
 # Tests
@@ -189,13 +215,15 @@ print(Delta(state('1', 0), ['a', epsilonElement], state('1', 1)))
 
 outputStr = ''
 
-def print_mach(*mach: Machine.__annotations__, reset:bool = False):
+
+def print_mach(*mach: getMachineStr.__annotations__, reset: bool = False) -> list[Delta]:
     global outputStr
     if reset:
         outputStr = ''
-    curMach = Machine(*mach)
+    (curMach, curDeltas) = getMachine(*mach)
     print(f"Machine {mach!r}:\n{curMach}\n\n")
     outputStr += curMach
+    return curDeltas
 
 
 # Test a bunch of error conditions.
@@ -208,7 +236,7 @@ testBadMachines = ['a1', ['a', epsilonElement],
 for mach in testBadMachines:
     try:
         print(mach)
-        print(Machine(*mach))
+        print(getMachineStr(*mach))
     except Exception as e:
         print(f"Good catch for machine{mach!r}: {e}")
 
@@ -218,9 +246,10 @@ print_mach('a2b', [(0, 'b', 1), (1, 'c', 'f')])
 print_mach('a2', [(0, epsilonElement, state_2('a2a', 0)), (state_2('a2b', 'f'), epsilonElement, 'f')])
 
 #  (a + bc)(a + b)*
-print_mach('a2a', 'b', reset=True)
-print_mach('a2b', 'c')
-print_mach('a2', [(0, epsilonElement, state_2('a2a', 0)), (state_2('a2b', 'f'), epsilonElement, 'f')])
+Ma2a = print_mach('a2a', 'b', reset=True)
+Ma2b = print_mach('a2b', 'c')
+Ma2 = print_mach('a2',
+                 [(0, epsilonElement, state_2('a2a', 0)), *Ma2a, *Ma2b, (state_2('a2b', 'f'), epsilonElement, 'f')])
 print_mach('a1', 'a')
 print_mach('a', [
         (0, epsilonElement, state_2('a1', 0)),
@@ -228,7 +257,6 @@ print_mach('a', [
         (state_2('a1', 'f'), epsilonElement, 'f'),
         (state_2('a2', 'f'), epsilonElement, 'f')
 ])
-
 
 # def mach_cat(name: str, machAdeltas: transitions_type, machBdeltas: transitions_type):
 #     print(machAdeltas)
